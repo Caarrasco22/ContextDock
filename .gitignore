@@ -36,6 +36,10 @@ yarn-error.log*
 # vercel
 .vercel
 
+# tauri
+/src-tauri/target/
+/dist/
+
 # typescript
 *.tsbuildinfo
 next-env.d.ts

@@ -1,36 +1,172 @@
-This is a [Next.js](https://nextjs.org) project bootstrapped with [`create-next-app`](https://nextjs.org/docs/app/api-reference/cli/create-next-app).
+<p align="center">
+  <img src="https://img.shields.io/badge/status-MVP%20%2F%20v0.1--experimental-yellow" alt="Status: MVP">
+  <img src="https://img.shields.io/badge/license-MIT-blue" alt="License: MIT">
+</p>
 
-## Getting Started
+<p align="center">
+  <img src="https://img.shields.io/badge/TypeScript-3178C6?logo=typescript&logoColor=white" alt="TypeScript">
+  <img src="https://img.shields.io/badge/Rust-000000?logo=rust&logoColor=white" alt="Rust">
+  <img src="https://img.shields.io/badge/Tauri-FFC131?logo=tauri&logoColor=black" alt="Tauri">
+  <img src="https://img.shields.io/badge/Next.js-000000?logo=nextdotjs&logoColor=white" alt="Next.js">
+  <img src="https://img.shields.io/badge/React-61DAFB?logo=react&logoColor=black" alt="React">
+  <img src="https://img.shields.io/badge/Tailwind-06B6D4?logo=tailwindcss&logoColor=white" alt="Tailwind CSS">
+</p>
 
-First, run the development server:
+# ContextDock
 
-```bash
-npm run dev
-# or
-yarn dev
-# or
-pnpm dev
-# or
-bun dev
+A lightweight local desktop app that keeps persistent project context and bridges **ChatGPT** with **OpenCode** so AI coding sessions continue from where they left off.
+
+## The problem
+
+When working on a project across multiple ChatGPT and OpenCode sessions, context is constantly lost — you have to re-explain your architecture, goals, and recent changes every time.
+
+## The solution
+
+ContextDock sits between ChatGPT (strategy & planning) and OpenCode (code execution). It scans your local projects, generates a persistent `.context-bridge/` folder with structured markdown context, and produces a `launch-prompt.md` that you can feed to OpenCode for informed, contextualized coding sessions.
+
+```
+ChatGPT  ──►  ContextDock  ──►  .context-bridge/  ──►  launch-prompt.md  ──►  OpenCode
+(strategy)    (context manager)       (persistent state)       (generated prompt)     (code execution)
 ```
 
-Open [http://localhost:3000](http://localhost:3000) with your browser to see the result.
+## Philosophy
 
-You can start editing the page by modifying `app/page.tsx`. The page auto-updates as you edit the file.
+- **Local-first**: Everything runs on your machine. No SaaS, no remote backend, no cloud.
+- **Filesystem-first**: Context is plain Markdown + JSON. Human-readable, versionable, portable.
+- **Lightweight**: No databases, no heavy indexing, no agents running autonomously.
+- **Manual control**: You decide when to generate prompts, when to launch OpenCode, what to edit.
 
-This project uses [`next/font`](https://nextjs.org/docs/app/building-your-application/optimizing/fonts) to automatically optimize and load [Geist](https://vercel.com/font), a new font family for Vercel.
+## Tech Stack
 
-## Learn More
+| Layer | Technology |
+|-------|-----------|
+| Frontend | Next.js 16 (App Router), React 19 |
+| Styling | Tailwind CSS 4 |
+| State | Zustand |
+| Desktop Shell | Tauri 2.x |
+| Backend | Rust (Tauri commands) |
+| Language | TypeScript 5 |
+| Storage | Markdown + JSON files (no database) |
 
-To learn more about Next.js, take a look at the following resources:
+## Current Features
 
-- [Next.js Documentation](https://nextjs.org/docs) - learn about Next.js features and API.
-- [Learn Next.js](https://nextjs.org/learn) - an interactive Next.js tutorial.
+- [x] **Dashboard** with project list from a configurable root folder
+- [x] **Project type detection** — Next.js, Node, Python, Rust, Unknown
+- [x] **`.context-bridge/` initialization** with preview modal and `.gitignore` integration
+- [x] **Context file editors** — edit `current.md`, `architecture.md`, `recent-work.md` inline
+- [x] **Launch prompt generation** — produces `launch-prompt.md` with Current Goal, Architecture, Recent Work, Git Status, Recent Commits, and a useful Requested Task
+- [x] **Git panel** — branch, staged/modified/untracked files, recent commits
+- [x] **Settings persistence** — root projects path and OpenCode command saved locally
+- [x] **Frontend-only mode** — graceful degradation when Tauri is unavailable
+- [x] **Error handling** — safe fallbacks for missing paths, permission errors, uninitialized context
 
-You can check out [the Next.js GitHub repository](https://github.com/vercel/next.js) - your feedback and contributions are welcome!
+## Known Limitations
 
-## Deploy on Vercel
+- **OpenCode launcher currently Windows-only** — macOS support pending
+- **Session capture not yet implemented** — `sessions.json` and `history/` exist but are not populated
+- **Rust tests hardcode Windows paths** — tests will fail on macOS
+- This is an **experimental MVP** — expect rough edges
 
-The easiest way to deploy your Next.js app is to use the [Vercel Platform](https://vercel.com/new?utm_medium=default-template&filter=next.js&utm_source=create-next-app&utm_campaign=create-next-app-readme) from the creators of Next.js.
+## Roadmap
 
-Check out our [Next.js deployment documentation](https://nextjs.org/docs/app/building-your-application/deploying) for more details.
+See [docs/ROADMAP.md](docs/ROADMAP.md) for the full plan.
+
+## Prerequisites
+
+- **Node.js** ≥ 18
+- **Rust** (required for Tauri backend)
+
+Install Rust:
+```powershell
+# Windows
+winget install -e --id Rustlang.Rustup
+
+# macOS / Linux
+curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
+```
+
+Verify:
+```bash
+cargo --version
+```
+
+## Setup & Development
+
+```bash
+cd contextdock
+npm install
+```
+
+### Frontend only (no Rust)
+```bash
+npm run dev
+# → http://localhost:3000
+```
+A banner indicates limited functionality when running without Tauri.
+
+### Full desktop app
+```bash
+npm run tauri:dev
+```
+
+### Build
+```bash
+npm run build        # Frontend
+cargo check          # Rust (from src-tauri/)
+cargo test           # Rust tests
+```
+
+## Project Structure
+
+```
+contextdock/
+├── app/                        # Next.js App Router
+│   ├── components/             # ProjectCard, InitPreviewModal, SettingsDrawer
+│   ├── lib/                    # TypeScript types + Tauri command bindings
+│   ├── project/[id]/           # Standalone project detail page
+│   ├── settings/               # Standalone settings page
+│   ├── stores/                 # Zustand stores (settings, projects)
+│   ├── globals.css             # Tailwind + CSS variables
+│   ├── layout.tsx              # Root layout (dark theme)
+│   └── page.tsx                # Main dashboard
+├── src-tauri/                  # Tauri + Rust backend
+│   ├── src/
+│   │   ├── commands/
+│   │   │   ├── projects.rs     # Scan, init, read/write context files
+│   │   │   ├── settings.rs     # Load/save app settings
+│   │   │   ├── git.rs          # Git info (branch, status, commits)
+│   │   │   ├── opencode.rs     # Prompt generation + OpenCode launch
+│   │   │   └── git_tests.rs    # Unit tests
+│   │   ├── lib.rs              # Tauri app setup, command registration
+│   │   └── main.rs             # Binary entry point
+│   ├── Cargo.toml
+│   └── tauri.conf.json         # Window config, bundle, icons
+├── docs/                       # Documentation
+│   ├── PROJECT_OVERVIEW.md     # Technical architecture
+│   ├── ROADMAP.md              # Future plans
+│   └── dev-checklist.md        # Manual testing checklist
+├── package.json
+├── next.config.ts
+├── tsconfig.json
+└── README.md
+```
+
+## `.context-bridge/` Folder
+
+Each project gets a portable, human-readable context folder:
+
+| File | Purpose |
+|------|---------|
+| `meta.json` | Project metadata (name, path, type, timestamps, favorite) |
+| `current.md` | Current focus — what you're working on now |
+| `architecture.md` | Project structure (auto-generated on init, editable) |
+| `recent-work.md` | Summary of recent sessions |
+| `sessions.json` | Session history array |
+| `launch-prompt.md` | Generated context prompt for OpenCode |
+| `history/` | Session prompt snapshots |
+
+The folder is added to `.gitignore` automatically when the project has a `.git` directory.
+
+## License
+
+MIT — see [LICENSE](LICENSE) for details.
