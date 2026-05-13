@@ -16,6 +16,10 @@
 
 A lightweight local desktop app that keeps persistent project context and bridges **ChatGPT** with **OpenCode** so AI coding sessions continue from where they left off.
 
+<p align="center">
+  <img src="docs/screenshot-dashboard.png" alt="ContextDock Dashboard" width="800">
+</p>
+
 ## The problem
 
 When working on a project across multiple ChatGPT and OpenCode sessions, context is constantly lost — you have to re-explain your architecture, goals, and recent changes every time.
