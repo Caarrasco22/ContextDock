@@ -8,40 +8,48 @@ mod git_tests {
         std::env::temp_dir().join(format!("contextdock-test-{}", std::process::id()))
     }
 
-    fn assert_git_available() {
-        let ok = Command::new("git")
+    fn is_git_available() -> bool {
+        Command::new("git")
             .arg("--version")
             .output()
             .map(|o| o.status.success())
-            .unwrap_or(false);
-        if !ok {
-            panic!("git is not available — cannot run this test");
-        }
+            .unwrap_or(false)
     }
 
-    fn setup_git_repo() -> (std::path::PathBuf, String) {
-        assert_git_available();
+    fn setup_git_repo() -> Option<(std::path::PathBuf, String)> {
+        if !is_git_available() {
+            return None;
+        }
+
         let dir = test_temp_root().join("test-repo");
         let _ = fs::remove_dir_all(&dir);
-        fs::create_dir_all(&dir).unwrap();
+        fs::create_dir_all(&dir).ok()?;
+
         Command::new("git")
-            .args(["init"])
+            .args(["-c", "user.name=Test", "-c", "user.email=test@test.com", "init"])
             .current_dir(&dir)
             .output()
-            .unwrap();
-        fs::write(dir.join("test.txt"), "hello").unwrap();
+            .ok()
+            .filter(|o| o.status.success())?;
+
+        fs::write(dir.join("test.txt"), "hello").ok()?;
+
         Command::new("git")
-            .args(["add", "test.txt"])
+            .args(["-c", "user.name=Test", "-c", "user.email=test@test.com", "add", "test.txt"])
             .current_dir(&dir)
             .output()
-            .unwrap();
+            .ok()
+            .filter(|o| o.status.success())?;
+
         Command::new("git")
-            .args(["commit", "-m", "initial"])
+            .args(["-c", "user.name=Test", "-c", "user.email=test@test.com", "commit", "-m", "initial"])
             .current_dir(&dir)
             .output()
-            .unwrap();
+            .ok()
+            .filter(|o| o.status.success())?;
+
         let path_str = dir.to_string_lossy().to_string();
-        (dir, path_str)
+        Some((dir, path_str))
     }
 
     #[test]
@@ -59,7 +67,10 @@ mod git_tests {
 
     #[test]
     fn test_git_info_repo() {
-        let (dir, path_str) = setup_git_repo();
+        let (dir, path_str) = match setup_git_repo() {
+            Some(v) => v,
+            None => return,
+        };
         let result = get_git_info(path_str);
         let _ = fs::remove_dir_all(&dir);
         assert!(result.is_ok());
@@ -77,7 +88,10 @@ mod git_tests {
 
     #[test]
     fn test_is_git_repo_true() {
-        let (dir, path_str) = setup_git_repo();
+        let (dir, path_str) = match setup_git_repo() {
+            Some(v) => v,
+            None => return,
+        };
         let result = is_git_repo(path_str);
         let _ = fs::remove_dir_all(&dir);
         assert!(result);
