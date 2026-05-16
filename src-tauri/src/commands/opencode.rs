@@ -214,6 +214,128 @@ pub fn read_launch_prompt(project_path: String) -> Result<String, String> {
     fs::read_to_string(&path).map_err(|e| e.to_string())
 }
 
+#[cfg(target_os = "macos")]
+fn shell_escape_single_quotes(s: &str) -> String {
+    s.replace('\'', "'\\''")
+}
+
+#[cfg(target_os = "windows")]
+fn launch_in_terminal(cmd_str: &str, cwd: &Path, prompt_path: Option<&Path>) -> Result<(), String> {
+    let mut args: Vec<String> = vec!["/C".to_string(), "start".to_string(), "OpenCode".to_string()];
+
+    let full_cmd = if let Some(p) = prompt_path {
+        let pp_escaped = p.to_string_lossy().replace('\'', "''");
+        format!(
+            "powershell -NoProfile -Command \"cd '{}'; {} --prompt (Get-Content '{}' -Raw); pause\"",
+            cwd.to_string_lossy().replace('\'', "''"),
+            cmd_str,
+            pp_escaped
+        )
+    } else {
+        format!("cd /D \"{}\" && {}", cwd.to_string_lossy(), cmd_str)
+    };
+
+    args.push(full_cmd);
+
+    Command::new("cmd")
+        .args(&args)
+        .current_dir(cwd)
+        .spawn()
+        .map_err(|e| format!("Failed to launch OpenCode: {}", e))?;
+
+    Ok(())
+}
+
+#[cfg(target_os = "macos")]
+fn launch_in_terminal(cmd_str: &str, cwd: &Path, prompt_path: Option<&Path>) -> Result<(), String> {
+    let cwd_escaped = shell_escape_single_quotes(&cwd.to_string_lossy());
+    let pp_escaped = prompt_path.map(|p| shell_escape_single_quotes(&p.to_string_lossy()));
+    let command_line = build_shell_command(cmd_str, pp_escaped.as_deref());
+
+    let script = format!(
+        "tell application \"Terminal\" to do script \"cd '{}' && {}; exit\"",
+        cwd_escaped.replace('\\', "\\\\").replace('"', "\\\""),
+        command_line.replace('\\', "\\\\").replace('"', "\\\"")
+    );
+
+    let output = Command::new("osascript")
+        .arg("-e")
+        .arg(&script)
+        .output()
+        .map_err(|e| format!("Failed to launch OpenCode: {}", e))?;
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        return Err(format!("OpenCode launch error: {}", stderr.trim()));
+    }
+
+    Ok(())
+}
+
+#[cfg(target_os = "linux")]
+fn launch_in_terminal(cmd_str: &str, cwd: &Path, prompt_path: Option<&Path>) -> Result<(), String> {
+    let pp_escaped = prompt_path.map(|p| p.to_string_lossy().replace('\'', "'\\''"));
+    let full_cmd = build_shell_command(cmd_str, pp_escaped.as_deref());
+
+    let terminals: &[(&str, &[&str])] = &[
+        ("gnome-terminal", &["--", "bash", "-c"]),
+        ("konsole", &["-e"]),
+        ("xfce4-terminal", &["-e"]),
+        ("xterm", &["-e"]),
+    ];
+
+    let shell_cmd = format!("cd \"{}\" && {}; exec $SHELL", cwd.to_string_lossy(), full_cmd);
+
+    for (term, prefix_args) in terminals {
+        let mut cmd = Command::new(term);
+        cmd.args(*prefix_args);
+        cmd.arg(&shell_cmd);
+
+        match cmd.spawn() {
+            Ok(_) => return Ok(()),
+            Err(_) => continue,
+        }
+    }
+
+    let mut parts: Vec<&str> = full_cmd.split_whitespace().collect();
+    if parts.is_empty() {
+        return Err("OpenCode command is empty.".to_string());
+    }
+    let exe = parts.remove(0);
+    Command::new(exe)
+        .args(&parts)
+        .current_dir(cwd)
+        .spawn()
+        .map_err(|e| format!("Failed to launch OpenCode: {}", e))?;
+
+    Ok(())
+}
+
+#[cfg(not(any(target_os = "windows", target_os = "macos", target_os = "linux")))]
+fn launch_in_terminal(cmd_str: &str, cwd: &Path, prompt_path: Option<&Path>) -> Result<(), String> {
+    let pp_escaped = prompt_path.map(|p| p.to_string_lossy().replace('\'', "'\\''"));
+    let full_cmd = build_shell_command(cmd_str, pp_escaped.as_deref());
+    let mut parts: Vec<&str> = full_cmd.split_whitespace().collect();
+    if parts.is_empty() {
+        return Err("OpenCode command is empty.".to_string());
+    }
+    let exe = parts.remove(0);
+    Command::new(exe)
+        .args(&parts)
+        .current_dir(cwd)
+        .spawn()
+        .map_err(|e| format!("Failed to launch OpenCode: {}", e))?;
+    Ok(())
+}
+
+fn build_shell_command(opencode_cmd: &str, prompt_path_escaped: Option<&str>) -> String {
+    let mut cmd = opencode_cmd.to_string();
+    if let Some(p) = prompt_path_escaped {
+        cmd = format!("{} --prompt \"$(cat '{}')\"", cmd, p);
+    }
+    cmd
+}
+
 #[command]
 pub fn launch_opencode(project_path: String) -> Result<(), String> {
     let settings = load_settings()?;
@@ -231,28 +353,86 @@ pub fn launch_opencode(project_path: String) -> Result<(), String> {
     let prompt_path = path.join(".context-bridge").join("launch-prompt.md");
     let has_prompt = prompt_path.exists();
 
-    let mut cmd = Command::new("cmd");
-    cmd.args(["/C", "start", opencode_cmd]);
+    launch_in_terminal(
+        opencode_cmd,
+        path,
+        if has_prompt {
+            Some(prompt_path.as_path())
+        } else {
+            None
+        },
+    )
+}
 
-    if has_prompt {
-        let prompt_str = prompt_path.to_string_lossy().to_string();
-        if opencode_cmd.contains("opencode") {
-            cmd = Command::new("cmd");
-            cmd.args(["/C", "start", "", opencode_cmd, &format!("\"{}\"", prompt_str)]);
-        }
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_build_shell_command_without_prompt() {
+        let result = build_shell_command("opencode", None);
+        assert_eq!(result, "opencode");
     }
 
-    cmd.current_dir(path);
-
-    let output = cmd.output().map_err(|e| format!("Failed to launch OpenCode: {}", e))?;
-
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        if stderr.is_empty() {
-            return Err("OpenCode launch failed. Please check your opencode_command setting.".to_string());
-        }
-        return Err(format!("OpenCode error: {}", stderr.trim()));
+    #[test]
+    fn test_build_shell_command_with_prompt() {
+        let escaped_path = "/test/project/.context-bridge/launch-prompt.md";
+        let result = build_shell_command("opencode", Some(escaped_path));
+        assert!(
+            result.contains("--prompt"),
+            "Command should contain --prompt flag, got: {}",
+            result
+        );
+        assert!(
+            result.contains("$(cat '"),
+            "Command should use $(cat) for prompt content, got: {}",
+            result
+        );
     }
 
-    Ok(())
+    #[test]
+    fn test_build_shell_command_no_prompt_path_as_positional() {
+        let escaped_path = "/test/project/.context-bridge/launch-prompt.md";
+        let result = build_shell_command("opencode", Some(escaped_path));
+
+        let after_opencode = result.strip_prefix("opencode ").unwrap_or("");
+        assert!(
+            after_opencode.starts_with("--prompt"),
+            "First argument after opencode should be --prompt, not a path. Got: {}",
+            result
+        );
+    }
+
+    #[test]
+    fn test_generate_launch_prompt_creates_file() {
+        let dir = std::env::temp_dir().join(format!("contextdock-opencode-test-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(dir.join(".context-bridge")).unwrap();
+        std::fs::write(dir.join(".context-bridge").join("meta.json"), "{}").unwrap();
+        std::fs::write(dir.join(".context-bridge").join("current.md"), "# Current Focus\n\nTesting launch prompt.").unwrap();
+        std::fs::write(dir.join(".context-bridge").join("architecture.md"), "# Architecture\n\nTest arch.").unwrap();
+        std::fs::write(dir.join(".context-bridge").join("recent-work.md"), "# Recent Work\n\nTest work.").unwrap();
+
+        let result = generate_opencode_launch_prompt(dir.to_string_lossy().to_string());
+        let _ = std::fs::remove_dir_all(&dir);
+
+        assert!(result.is_ok());
+        let launch = result.unwrap();
+        assert!(launch.path.ends_with("launch-prompt.md"));
+        assert!(launch.content.contains("Current Goal"));
+        assert!(launch.content.contains("Testing launch prompt"));
+    }
+
+    #[test]
+    fn test_generate_launch_prompt_missing_context_dir() {
+        let dir = std::env::temp_dir().join(format!("contextdock-noctx-test-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+
+        let result = generate_opencode_launch_prompt(dir.to_string_lossy().to_string());
+        let _ = std::fs::remove_dir_all(&dir);
+
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains(".context-bridge"));
+    }
 }

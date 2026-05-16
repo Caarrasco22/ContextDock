@@ -53,7 +53,7 @@ All frontend-to-backend communication goes through `invoke()` calls to these Rus
 | `is_git_repo` | `git.rs` | Check if `.git/` exists |
 | `generate_opencode_launch_prompt` | `opencode.rs` | Build and write `launch-prompt.md` |
 | `read_launch_prompt` | `opencode.rs` | Read existing `launch-prompt.md` |
-| `launch_opencode` | `opencode.rs` | Spawn OpenCode process (Windows only) |
+| `launch_opencode` | `opencode.rs` | Spawn OpenCode process (cross-platform) |
 
 ## Context Files Schema
 
@@ -146,9 +146,7 @@ Fields:
 
 ## Known Technical Limitations
 
-1. **OpenCode launch is Windows-only** — `opencode.rs:212-253` uses `cmd /C start`. No macOS branch yet.
-2. **Tests hardcode Windows paths** — `git_tests.rs` references `C:\Users\Caarrasco22\...`. Not portable.
-3. **No session capture** — `sessions.json` and `history/` exist but are never populated.
-4. **Project type detection is shallow** — only checks for marker files at the root level, no deep scanning.
-5. **Frontend-only mode is limited** — when Tauri is unavailable, most features are disabled (only the config prompt works).
-6. **No static export** — `next.config.ts` doesn't use `output: "export"`, so Tauri serves from `../.next` (dev server proxy). For production builds, this may need adjustment.
+1. **No session capture** — `sessions.json` and `history/` exist but are never populated.
+2. **Project type detection is shallow** — only checks for marker files at the root level, no deep scanning.
+3. **Frontend-only mode is limited** — when Tauri is unavailable, most features are disabled (only the config prompt works).
+4. **No static export** — `next.config.ts` doesn't use `output: "export"`, so Tauri serves from `../.next` (dev server proxy). For production builds, this may need adjustment.

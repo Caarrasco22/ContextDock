@@ -88,11 +88,53 @@ fn is_ignored_dir(name: &str) -> bool {
             | "venv"
             | "target"
             | ".cache"
+            | ".context-bridge"
     )
 }
 
 fn is_hidden_or_system(name: &str) -> bool {
     name.starts_with('.') || name == "$RECYCLE.BIN" || name == "System Volume Information"
+}
+
+fn is_project_root(path: &Path) -> bool {
+    let strong_markers = [
+        "package.json",
+        "Cargo.toml",
+        "pyproject.toml",
+        "requirements.txt",
+        "next.config.js",
+        "next.config.ts",
+        "vite.config.js",
+        "vite.config.ts",
+    ];
+
+    for marker in &strong_markers {
+        if path.join(marker).exists() {
+            return true;
+        }
+    }
+
+    path.join(".git").is_dir()
+}
+
+fn is_internal_dir(path: &Path) -> bool {
+    let name = path
+        .file_name()
+        .map(|n| n.to_string_lossy().to_string())
+        .unwrap_or_default();
+
+    let internal_names = [
+        "app",
+        "components",
+        "lib",
+        "src",
+        "public",
+        "pages",
+        "tests",
+        "docs",
+    ];
+
+    internal_names.contains(&name.as_str())
 }
 
 fn detect_project_type(path: &Path) -> ProjectType {
@@ -280,6 +322,35 @@ pub fn scan_projects(root_path: String) -> Result<Vec<ProjectSummary>, String> {
 
     let mut projects = Vec::new();
 
+    if is_project_root(root) {
+        let name = root
+            .file_name()
+            .map(|n| n.to_string_lossy().to_string())
+            .unwrap_or_default();
+
+        let has_context = root.join(".context-bridge").exists();
+        let project_type = detect_project_type(root);
+
+        let last_opened = if has_context {
+            let meta_path = root.join(".context-bridge/meta.json");
+            fs::read_to_string(&meta_path)
+                .ok()
+                .and_then(|content| serde_json::from_str::<ProjectMeta>(&content).ok())
+                .and_then(|meta| meta.last_opened_at)
+        } else {
+            None
+        };
+
+        projects.push(ProjectSummary {
+            id: name.clone(),
+            name,
+            path: root.to_string_lossy().to_string(),
+            has_context,
+            project_type,
+            last_opened_at: last_opened,
+        });
+    }
+
     let entries = fs::read_dir(root).map_err(|e| e.to_string())?;
 
     for entry in entries.flatten() {
@@ -288,11 +359,20 @@ pub fn scan_projects(root_path: String) -> Result<Vec<ProjectSummary>, String> {
             continue;
         }
 
-        let name = path.file_name()
+        let name = path
+            .file_name()
             .map(|n| n.to_string_lossy().to_string())
             .unwrap_or_default();
 
         if is_hidden_or_system(&name) {
+            continue;
+        }
+
+        if is_ignored_dir(&name) {
+            continue;
+        }
+
+        if is_internal_dir(&path) && !is_project_root(&path) {
             continue;
         }
 
@@ -303,9 +383,7 @@ pub fn scan_projects(root_path: String) -> Result<Vec<ProjectSummary>, String> {
             let meta_path = path.join(".context-bridge/meta.json");
             fs::read_to_string(&meta_path)
                 .ok()
-                .and_then(|content| {
-                    serde_json::from_str::<ProjectMeta>(&content).ok()
-                })
+                .and_then(|content| serde_json::from_str::<ProjectMeta>(&content).ok())
                 .and_then(|meta| meta.last_opened_at)
         } else {
             None
@@ -469,6 +547,199 @@ pub fn write_context_file(project_path: String, filename: String, content: Strin
     }
 
     fs::write(context_dir.join(&filename), content).map_err(|e| e.to_string())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::fs;
+
+    fn unique_test_dir(label: &str) -> std::path::PathBuf {
+        std::env::temp_dir().join(format!(
+            "contextdock-{}-{}",
+            label,
+            std::process::id()
+        ))
+    }
+
+    fn create_project_at(path: &std::path::Path, name: &str) -> std::path::PathBuf {
+        let proj = path.join(name);
+        fs::create_dir_all(&proj).unwrap();
+        fs::write(proj.join("package.json"), "{}").unwrap();
+        proj
+    }
+
+    #[test]
+    fn test_scan_root_contains_child_project() {
+        let root = unique_test_dir("scan-child");
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(&root).unwrap();
+
+        create_project_at(&root, "my-app");
+
+        let result = scan_projects(root.to_string_lossy().to_string());
+        let _ = fs::remove_dir_all(&root);
+
+        assert!(result.is_ok());
+        let projects = result.unwrap();
+        assert_eq!(projects.len(), 1);
+        assert_eq!(projects[0].name, "my-app");
+        assert!(matches!(projects[0].project_type, ProjectType::Node));
+    }
+
+    #[test]
+    fn test_scan_root_is_itself_a_project() {
+        let root = unique_test_dir("scan-self");
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(&root).unwrap();
+        fs::write(root.join("package.json"), "{}").unwrap();
+
+        let result = scan_projects(root.to_string_lossy().to_string());
+        let _ = fs::remove_dir_all(&root);
+
+        assert!(result.is_ok());
+        let projects = result.unwrap();
+        assert_eq!(projects.len(), 1);
+        assert_eq!(projects[0].path, root.to_string_lossy().to_string());
+        assert!(matches!(projects[0].project_type, ProjectType::Node));
+    }
+
+    #[test]
+    fn test_scan_root_project_with_app_subfolder_ignores_app() {
+        let root = unique_test_dir("scan-app-ignored");
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(&root).unwrap();
+        fs::write(root.join("package.json"), "{}").unwrap();
+        fs::create_dir_all(root.join("app")).unwrap();
+        fs::write(root.join("app/page.tsx"), "export default function Home() {}").unwrap();
+
+        let result = scan_projects(root.to_string_lossy().to_string());
+        let _ = fs::remove_dir_all(&root);
+
+        assert!(result.is_ok());
+        let projects = result.unwrap();
+        assert_eq!(projects.len(), 1, "app/ subfolder should not be treated as a standalone project");
+        assert_eq!(projects[0].path, root.to_string_lossy().to_string());
+    }
+
+    #[test]
+    fn test_scan_root_project_with_app_that_has_own_packagejson() {
+        let root = unique_test_dir("scan-app-pkg");
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(&root).unwrap();
+        fs::write(root.join("package.json"), "{}").unwrap();
+        let app_dir = root.join("app");
+        fs::create_dir_all(&app_dir).unwrap();
+        fs::write(app_dir.join("package.json"), "{}").unwrap();
+
+        let result = scan_projects(root.to_string_lossy().to_string());
+        let _ = fs::remove_dir_all(&root);
+
+        assert!(result.is_ok());
+        let projects = result.unwrap();
+        assert_eq!(projects.len(), 2, "app/ with its own package.json should be a project");
+    }
+
+    #[test]
+    fn test_scan_multiple_child_projects() {
+        let root = unique_test_dir("scan-multi");
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(&root).unwrap();
+
+        create_project_at(&root, "project-a");
+        create_project_at(&root, "project-b");
+        create_project_at(&root, "project-c");
+
+        let result = scan_projects(root.to_string_lossy().to_string());
+        let _ = fs::remove_dir_all(&root);
+
+        assert!(result.is_ok());
+        let projects = result.unwrap();
+        assert_eq!(projects.len(), 3);
+        let names: Vec<&str> = projects.iter().map(|p| p.name.as_str()).collect();
+        assert!(names.contains(&"project-a"));
+        assert!(names.contains(&"project-b"));
+        assert!(names.contains(&"project-c"));
+    }
+
+    #[test]
+    fn test_scan_nonexistent_path() {
+        let path = unique_test_dir("nonexistent").join("definitely-does-not-exist-98765");
+        let result = scan_projects(path.to_string_lossy().to_string());
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_is_project_root_detects_package_json() {
+        let dir = unique_test_dir("pkg-json");
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        fs::write(dir.join("package.json"), "{}").unwrap();
+        assert!(is_project_root(&dir));
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn test_is_project_root_detects_cargo_toml() {
+        let dir = unique_test_dir("cargo-toml");
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        fs::write(dir.join("Cargo.toml"), "[package]").unwrap();
+        assert!(is_project_root(&dir));
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn test_is_project_root_detects_git_dir() {
+        let dir = unique_test_dir("git-dir");
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(dir.join(".git")).unwrap();
+        assert!(is_project_root(&dir));
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn test_is_project_root_false_for_empty_dir() {
+        let dir = unique_test_dir("empty");
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        assert!(!is_project_root(&dir));
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn test_is_project_root_false_for_readme_only() {
+        let dir = unique_test_dir("readme");
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        fs::write(dir.join("README.md"), "# Hello").unwrap();
+        assert!(!is_project_root(&dir));
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn test_is_internal_dir_true() {
+        let dir = unique_test_dir("internal-true");
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(dir.join("app")).unwrap();
+        fs::create_dir_all(dir.join("src")).unwrap();
+        fs::create_dir_all(dir.join("components")).unwrap();
+        assert!(is_internal_dir(&dir.join("app")));
+        assert!(is_internal_dir(&dir.join("src")));
+        assert!(is_internal_dir(&dir.join("components")));
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn test_is_internal_dir_false_for_regular_names() {
+        let dir = unique_test_dir("internal-false");
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(dir.join("my-project")).unwrap();
+        fs::create_dir_all(dir.join("backend")).unwrap();
+        assert!(!is_internal_dir(&dir.join("my-project")));
+        assert!(!is_internal_dir(&dir.join("backend")));
+        let _ = fs::remove_dir_all(&dir);
+    }
 }
 
 fn chrono_now() -> String {

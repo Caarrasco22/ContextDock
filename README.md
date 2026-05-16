@@ -66,9 +66,8 @@ ChatGPT  ──►  ContextDock  ──►  .context-bridge/  ──►  launch-
 
 ## Known Limitations
 
-- **OpenCode launcher currently Windows-only** — macOS support pending
+- **OpenCode launcher is cross-platform** — supports Windows, macOS, and Linux
 - **Session capture not yet implemented** — `sessions.json` and `history/` exist but are not populated
-- **Rust tests hardcode Windows paths** — tests will fail on macOS
 - This is an **experimental MVP** — expect rough edges
 
 ## Roadmap

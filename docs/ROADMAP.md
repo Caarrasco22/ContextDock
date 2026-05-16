@@ -17,7 +17,7 @@
 ## v0.2 — Session Awareness
 
 - [ ] Editable `## Requested Task` in UI (user can customize the task before launching)
-- [ ] `launch_opencode` cross-platform (macOS support)
+- [x] `launch_opencode` cross-platform (macOS support)
 - [ ] Session capture — start/end sessions, populate `sessions.json`
 - [ ] Session history — save prompts to `history/` on launch
 - [ ] Project "health" indicator (untracked files count, stale context warning)
