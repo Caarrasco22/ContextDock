@@ -204,6 +204,21 @@ pub fn generate_opencode_launch_prompt(
     let prompt_path = context_dir.join("launch-prompt.md");
     fs::write(&prompt_path, &prompt_content).map_err(|e| e.to_string())?;
 
+    // Save history snapshot
+    let history_dir = context_dir.join("history");
+    fs::create_dir_all(&history_dir).map_err(|e| e.to_string())?;
+
+    let timestamp = chrono::Local::now().format("%Y-%m-%d_%H%M%S");
+    let mut snapshot_name = format!("{}-launch-prompt.md", timestamp);
+    let mut snapshot_path = history_dir.join(&snapshot_name);
+    let mut counter = 1u32;
+    while snapshot_path.exists() {
+        counter += 1;
+        snapshot_name = format!("{}-{}-launch-prompt.md", timestamp, counter);
+        snapshot_path = history_dir.join(&snapshot_name);
+    }
+    fs::write(&snapshot_path, &prompt_content).map_err(|e| e.to_string())?;
+
     Ok(LaunchPromptResult {
         path: prompt_path.to_string_lossy().to_string(),
         content: prompt_content,
@@ -410,16 +425,35 @@ mod tests {
         );
     }
 
-    #[test]
-    fn test_generate_launch_prompt_creates_file() {
-        let dir = std::env::temp_dir().join(format!("contextdock-opencode-test-{}", std::process::id()));
+    fn setup_test_context_dir(label: &str) -> std::path::PathBuf {
+        let dir = std::env::temp_dir().join(format!("contextdock-{}-{}", label, std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(dir.join(".context-bridge")).unwrap();
         std::fs::write(dir.join(".context-bridge").join("meta.json"), "{}").unwrap();
         std::fs::write(dir.join(".context-bridge").join("current.md"), "# Current Focus\n\nTesting launch prompt.").unwrap();
         std::fs::write(dir.join(".context-bridge").join("architecture.md"), "# Architecture\n\nTest arch.").unwrap();
         std::fs::write(dir.join(".context-bridge").join("recent-work.md"), "# Recent Work\n\nTest work.").unwrap();
+        dir
+    }
 
+    fn count_history_snapshots(dir: &std::path::Path) -> usize {
+        let history = dir.join(".context-bridge").join("history");
+        if !history.exists() {
+            return 0;
+        }
+        std::fs::read_dir(&history)
+            .map(|entries| {
+                entries
+                    .filter_map(|e| e.ok())
+                    .filter(|e| e.file_name().to_string_lossy().ends_with("-launch-prompt.md"))
+                    .count()
+            })
+            .unwrap_or(0)
+    }
+
+    #[test]
+    fn test_generate_launch_prompt_creates_file() {
+        let dir = setup_test_context_dir("opencode-test");
         let result = generate_opencode_launch_prompt(dir.to_string_lossy().to_string(), None);
         let _ = std::fs::remove_dir_all(&dir);
 
@@ -433,14 +467,7 @@ mod tests {
 
     #[test]
     fn test_generate_launch_prompt_with_custom_task() {
-        let dir = std::env::temp_dir().join(format!("contextdock-customtask-test-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(dir.join(".context-bridge")).unwrap();
-        std::fs::write(dir.join(".context-bridge").join("meta.json"), "{}").unwrap();
-        std::fs::write(dir.join(".context-bridge").join("current.md"), "# Current Focus\n\nTesting.").unwrap();
-        std::fs::write(dir.join(".context-bridge").join("architecture.md"), "").unwrap();
-        std::fs::write(dir.join(".context-bridge").join("recent-work.md"), "").unwrap();
-
+        let dir = setup_test_context_dir("customtask-test");
         let custom = "Fix the login bug in auth module.";
         let result = generate_opencode_launch_prompt(dir.to_string_lossy().to_string(), Some(custom.to_string()));
         let _ = std::fs::remove_dir_all(&dir);
@@ -453,14 +480,7 @@ mod tests {
 
     #[test]
     fn test_generate_launch_prompt_empty_task_uses_default() {
-        let dir = std::env::temp_dir().join(format!("contextdock-emptytask-test-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(dir.join(".context-bridge")).unwrap();
-        std::fs::write(dir.join(".context-bridge").join("meta.json"), "{}").unwrap();
-        std::fs::write(dir.join(".context-bridge").join("current.md"), "# Current Focus\n\nTesting.").unwrap();
-        std::fs::write(dir.join(".context-bridge").join("architecture.md"), "").unwrap();
-        std::fs::write(dir.join(".context-bridge").join("recent-work.md"), "").unwrap();
-
+        let dir = setup_test_context_dir("emptytask-test");
         let result = generate_opencode_launch_prompt(dir.to_string_lossy().to_string(), Some("   ".to_string()));
         let _ = std::fs::remove_dir_all(&dir);
 
@@ -480,5 +500,57 @@ mod tests {
 
         assert!(result.is_err());
         assert!(result.unwrap_err().contains(".context-bridge"));
+    }
+
+    #[test]
+    fn test_history_snapshot_created() {
+        let dir = setup_test_context_dir("history-test");
+        let result = generate_opencode_launch_prompt(dir.to_string_lossy().to_string(), None);
+
+        assert!(result.is_ok());
+        let count = count_history_snapshots(&dir);
+        let _ = std::fs::remove_dir_all(&dir);
+        assert_eq!(count, 1, "Expected 1 history snapshot, found {}", count);
+    }
+
+    #[test]
+    fn test_history_snapshot_content_matches() {
+        let dir = setup_test_context_dir("history-content");
+        let result = generate_opencode_launch_prompt(dir.to_string_lossy().to_string(), None);
+
+        assert!(result.is_ok());
+        let launch = result.unwrap();
+        assert_eq!(count_history_snapshots(&dir), 1);
+
+        let history_dir = dir.join(".context-bridge").join("history");
+        assert!(history_dir.exists(), "history dir should exist at {}", history_dir.display());
+        let snapshot_content = std::fs::read_dir(&history_dir)
+            .ok()
+            .and_then(|entries| {
+                entries
+                    .filter_map(|e| e.ok())
+                    .find(|e| e.file_name().to_string_lossy().ends_with("-launch-prompt.md"))
+                    .and_then(|e| std::fs::read_to_string(e.path()).ok())
+            })
+            .expect("snapshot file should be readable");
+
+        let _ = std::fs::remove_dir_all(&dir);
+        assert_eq!(snapshot_content, launch.content);
+    }
+
+    #[test]
+    fn test_history_two_generations_two_snapshots() {
+        let dir = setup_test_context_dir("history-two");
+        let _ = generate_opencode_launch_prompt(dir.to_string_lossy().to_string(), Some("First task.".to_string()));
+        std::thread::sleep(std::time::Duration::from_secs(1));
+        let result2 = generate_opencode_launch_prompt(dir.to_string_lossy().to_string(), Some("Second task.".to_string()));
+
+        assert!(result2.is_ok());
+        let launch2 = result2.unwrap();
+        let count = count_history_snapshots(&dir);
+        let _ = std::fs::remove_dir_all(&dir);
+
+        assert_eq!(count, 2, "Expected 2 history snapshots, found {}", count);
+        assert!(launch2.content.contains("Second task."));
     }
 }

@@ -125,6 +125,7 @@ Generated on demand. Structure:
    - Calls `get_git_info` for branch/status/commits
    - Builds prompt with `build_launch_prompt()` using structured template
    - Writes result to `.context-bridge/launch-prompt.md`
+   - Also saves a timestamped copy to `.context-bridge/history/<timestamp>-launch-prompt.md`
    - Returns content + path to frontend
 4. Frontend displays prompt status, enables Copy + Launch buttons
 
@@ -146,7 +147,7 @@ Fields:
 
 ## Known Technical Limitations
 
-1. **No session capture** — `sessions.json` and `history/` exist but are never populated.
+1. **No session capture** — `sessions.json` exists but is never populated. `history/` now stores timestamped launch prompt snapshots.
 2. **Project type detection is shallow** — only checks for marker files at the root level, no deep scanning.
 3. **Frontend-only mode is limited** — when Tauri is unavailable, most features are disabled (only the config prompt works).
 4. **No static export** — `next.config.ts` doesn't use `output: "export"`, so Tauri serves from `../.next` (dev server proxy). For production builds, this may need adjustment.

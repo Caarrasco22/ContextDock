@@ -16,10 +16,10 @@
 
 ## v0.2 — Session Awareness
 
-- [ ] Editable `## Requested Task` in UI (user can customize the task before launching)
+- [x] Editable `## Requested Task` in UI (user can customize the task before launching)
 - [x] `launch_opencode` cross-platform (macOS support)
 - [ ] Session capture — start/end sessions, populate `sessions.json`
-- [ ] Session history — save prompts to `history/` on launch
+- [x] Prompt history — save generated prompts to `history/` with timestamps
 - [ ] Project "health" indicator (untracked files count, stale context warning)
 - [ ] Reset/re-init `.context-bridge/` from UI
 

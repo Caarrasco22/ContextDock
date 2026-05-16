@@ -58,7 +58,8 @@ ChatGPT  ──►  ContextDock  ──►  .context-bridge/  ──►  launch-
 - [x] **Project type detection** — Next.js, Node, Python, Rust, Unknown
 - [x] **`.context-bridge/` initialization** with preview modal and `.gitignore` integration
 - [x] **Context file editors** — edit `current.md`, `architecture.md`, `recent-work.md` inline
-- [x] **Launch prompt generation** — produces `launch-prompt.md` with Current Goal, Architecture, Recent Work, Git Status, Recent Commits, and a useful Requested Task
+- [x] **Launch prompt generation** — produces `launch-prompt.md` with Current Goal, Architecture, Recent Work, Git Status, Recent Commits, and an editable Requested Task
+- [x] **Prompt history snapshots** — each generated prompt saved under `.context-bridge/history/` with a timestamp
 - [x] **Git panel** — branch, staged/modified/untracked files, recent commits
 - [x] **Settings persistence** — root projects path and OpenCode command saved locally
 - [x] **Frontend-only mode** — graceful degradation when Tauri is unavailable
@@ -67,7 +68,7 @@ ChatGPT  ──►  ContextDock  ──►  .context-bridge/  ──►  launch-
 ## Known Limitations
 
 - **OpenCode launcher is cross-platform** — supports Windows, macOS, and Linux
-- **Session capture not yet implemented** — `sessions.json` and `history/` exist but are not populated
+- **Session capture not yet implemented** — `sessions.json` exists but is not populated. `history/` now stores timestamped launch prompt snapshots.
 - This is an **experimental MVP** — expect rough edges
 
 ## Roadmap
