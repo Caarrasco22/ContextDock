@@ -22,8 +22,8 @@ export interface LaunchPromptResult {
   content: string;
 }
 
-export async function generateOpenCodeLaunchPrompt(projectPath: string): Promise<LaunchPromptResult> {
-  return invoke("generate_opencode_launch_prompt", { projectPath });
+export async function generateOpenCodeLaunchPrompt(projectPath: string, requestedTask?: string): Promise<LaunchPromptResult> {
+  return invoke("generate_opencode_launch_prompt", { projectPath, requestedTask });
 }
 
 export async function readLaunchPrompt(projectPath: string): Promise<string> {

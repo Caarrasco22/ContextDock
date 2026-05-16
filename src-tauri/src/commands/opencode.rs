@@ -14,11 +14,16 @@ pub struct LaunchPromptResult {
     pub content: String,
 }
 
+const DEFAULT_REQUESTED_TASK: &str = "\
+Continue from the Current Goal above. Implement the requested task described \
+there using the project context, architecture notes, and recent work.";
+
 fn build_launch_prompt(
     project_name: &str,
     project_path: &str,
     git_info: &GitInfo,
     context_files: &ContextFiles,
+    requested_task: Option<&str>,
 ) -> String {
     let is_git_repo = if git_info.is_repo { "yes" } else { "no" };
     let branch = git_info.branch.as_deref().unwrap_or("unknown");
@@ -129,7 +134,7 @@ fn build_launch_prompt(
 
 {recent_commits_section}
 
-## Instructions for OpenCode
+ ## Instructions for OpenCode
 
 You are working inside this local project.
 
@@ -145,13 +150,14 @@ Follow these rules:
 
 ## Requested Task
 
-Continue from the Current Goal above. Implement the requested task described there using the project context, architecture notes, and recent work.
-"#, project_name=project_name, project_path=project_path, is_git_repo=is_git_repo, branch=branch, current_goal=current_goal, architecture_text=architecture_text, recent_work_text=recent_work_text, changed_files_count=git_info.changed_files_count, changed_files_section=changed_files_section, recent_commits_section=recent_commits_section)
+{requested_task}
+"#, project_name=project_name, project_path=project_path, is_git_repo=is_git_repo, branch=branch, current_goal=current_goal, architecture_text=architecture_text, recent_work_text=recent_work_text, changed_files_count=git_info.changed_files_count, changed_files_section=changed_files_section, recent_commits_section=recent_commits_section, requested_task=requested_task.unwrap_or(DEFAULT_REQUESTED_TASK))
 }
 
 #[command]
 pub fn generate_opencode_launch_prompt(
     project_path: String,
+    requested_task: Option<String>,
 ) -> Result<LaunchPromptResult, String> {
     let path = Path::new(&project_path);
 
@@ -192,7 +198,8 @@ pub fn generate_opencode_launch_prompt(
         }
     };
 
-    let prompt_content = build_launch_prompt(&project_name, &project_path, &git_info, &context_files);
+    let task = requested_task.as_deref().filter(|t| !t.trim().is_empty());
+    let prompt_content = build_launch_prompt(&project_name, &project_path, &git_info, &context_files, task);
 
     let prompt_path = context_dir.join("launch-prompt.md");
     fs::write(&prompt_path, &prompt_content).map_err(|e| e.to_string())?;
@@ -413,7 +420,7 @@ mod tests {
         std::fs::write(dir.join(".context-bridge").join("architecture.md"), "# Architecture\n\nTest arch.").unwrap();
         std::fs::write(dir.join(".context-bridge").join("recent-work.md"), "# Recent Work\n\nTest work.").unwrap();
 
-        let result = generate_opencode_launch_prompt(dir.to_string_lossy().to_string());
+        let result = generate_opencode_launch_prompt(dir.to_string_lossy().to_string(), None);
         let _ = std::fs::remove_dir_all(&dir);
 
         assert!(result.is_ok());
@@ -421,6 +428,45 @@ mod tests {
         assert!(launch.path.ends_with("launch-prompt.md"));
         assert!(launch.content.contains("Current Goal"));
         assert!(launch.content.contains("Testing launch prompt"));
+        assert!(launch.content.contains(DEFAULT_REQUESTED_TASK));
+    }
+
+    #[test]
+    fn test_generate_launch_prompt_with_custom_task() {
+        let dir = std::env::temp_dir().join(format!("contextdock-customtask-test-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(dir.join(".context-bridge")).unwrap();
+        std::fs::write(dir.join(".context-bridge").join("meta.json"), "{}").unwrap();
+        std::fs::write(dir.join(".context-bridge").join("current.md"), "# Current Focus\n\nTesting.").unwrap();
+        std::fs::write(dir.join(".context-bridge").join("architecture.md"), "").unwrap();
+        std::fs::write(dir.join(".context-bridge").join("recent-work.md"), "").unwrap();
+
+        let custom = "Fix the login bug in auth module.";
+        let result = generate_opencode_launch_prompt(dir.to_string_lossy().to_string(), Some(custom.to_string()));
+        let _ = std::fs::remove_dir_all(&dir);
+
+        assert!(result.is_ok());
+        let launch = result.unwrap();
+        assert!(launch.content.contains(custom));
+        assert!(!launch.content.contains(DEFAULT_REQUESTED_TASK));
+    }
+
+    #[test]
+    fn test_generate_launch_prompt_empty_task_uses_default() {
+        let dir = std::env::temp_dir().join(format!("contextdock-emptytask-test-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(dir.join(".context-bridge")).unwrap();
+        std::fs::write(dir.join(".context-bridge").join("meta.json"), "{}").unwrap();
+        std::fs::write(dir.join(".context-bridge").join("current.md"), "# Current Focus\n\nTesting.").unwrap();
+        std::fs::write(dir.join(".context-bridge").join("architecture.md"), "").unwrap();
+        std::fs::write(dir.join(".context-bridge").join("recent-work.md"), "").unwrap();
+
+        let result = generate_opencode_launch_prompt(dir.to_string_lossy().to_string(), Some("   ".to_string()));
+        let _ = std::fs::remove_dir_all(&dir);
+
+        assert!(result.is_ok());
+        let launch = result.unwrap();
+        assert!(launch.content.contains(DEFAULT_REQUESTED_TASK));
     }
 
     #[test]
@@ -429,7 +475,7 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
 
-        let result = generate_opencode_launch_prompt(dir.to_string_lossy().to_string());
+        let result = generate_opencode_launch_prompt(dir.to_string_lossy().to_string(), None);
         let _ = std::fs::remove_dir_all(&dir);
 
         assert!(result.is_err());

@@ -203,6 +203,8 @@ function ProjectDetailPanel({
   onCopyPrompt,
   onLaunchOpenCode,
   isGeneratingPrompt,
+  requestedTask,
+  onRequestedTaskChange,
 }: {
   project: ProjectSummary;
   contextFiles: { meta: ProjectMeta | null; current: string | null; architecture: string | null; recent_work: string | null } | null;
@@ -221,6 +223,8 @@ function ProjectDetailPanel({
   onCopyPrompt: () => void;
   onLaunchOpenCode: () => void;
   isGeneratingPrompt: boolean;
+  requestedTask: string;
+  onRequestedTaskChange: (value: string) => void;
 }) {
   const typeColors: Record<string, string> = {
     nextjs: "bg-blue-900/30 text-blue-400 border-blue-800/50",
@@ -340,6 +344,16 @@ function ProjectDetailPanel({
                   </svg>
                   Launch OpenCode
                 </button>
+              </div>
+              <div className="space-y-1.5">
+                <label className="text-xs font-medium text-zinc-400">Requested Task</label>
+                <textarea
+                  value={requestedTask}
+                  onChange={(e) => onRequestedTaskChange(e.target.value)}
+                  rows={3}
+                  placeholder="What should OpenCode do?"
+                  className="w-full px-3 py-2 text-xs bg-zinc-800/50 border border-zinc-700/60 rounded-lg text-zinc-200 placeholder-zinc-600 focus:outline-none focus:border-zinc-600 resize-none"
+                />
               </div>
               {promptStatus && (
                 <div className={`text-xs px-3 py-2 rounded-lg ${promptStatus.includes("Error") || promptStatus.includes("error") ? "bg-red-900/30 text-red-400" : "bg-emerald-900/30 text-emerald-400"}`}>
@@ -548,6 +562,8 @@ export default function Home() {
   const [isGeneratingPrompt, setIsGeneratingPrompt] = useState(false);
   const [promptStatus, setPromptStatus] = useState<string | null>(null);
   const [isLaunchingOpenCode, setIsLaunchingOpenCode] = useState(false);
+  const defaultRequestedTask = "Continue from the Current Goal above. Implement the requested task described there using the project context, architecture notes, and recent work.";
+  const [requestedTask, setRequestedTask] = useState(defaultRequestedTask);
 
   const [showSettings, setShowSettings] = useState(false);
 
@@ -702,8 +718,9 @@ export default function Home() {
     setGitInfo(null);
     setLaunchPromptContent(null);
     setPromptStatus(null);
+    setRequestedTask(defaultRequestedTask);
     selectProject(null);
-  }, [selectProject]);
+  }, [selectProject, defaultRequestedTask]);
 
   const handleGenerateLaunchPrompt = useCallback(async () => {
     if (!selectedProject || isGeneratingPrompt) return;
@@ -711,7 +728,8 @@ export default function Home() {
     setPromptStatus(null);
 
     try {
-      const result = await generateOpenCodeLaunchPrompt(selectedProject.path);
+      const task = requestedTask.trim() ? requestedTask : undefined;
+      const result = await generateOpenCodeLaunchPrompt(selectedProject.path, task);
       setLaunchPromptContent(result.content);
       setPromptStatus("Launch prompt generated successfully!");
     } catch (err) {
@@ -719,7 +737,7 @@ export default function Home() {
     } finally {
       setIsGeneratingPrompt(false);
     }
-  }, [selectedProject, isGeneratingPrompt]);
+  }, [selectedProject, isGeneratingPrompt, requestedTask]);
 
   const handleCopyPrompt = useCallback(async () => {
     if (!launchPromptContent) return;
@@ -859,6 +877,8 @@ export default function Home() {
           onCopyPrompt={handleCopyPrompt}
           onLaunchOpenCode={handleLaunchOpenCode}
           isGeneratingPrompt={isGeneratingPrompt}
+          requestedTask={requestedTask}
+          onRequestedTaskChange={setRequestedTask}
         />
       )}
       <SettingsDrawer isOpen={showSettings} onClose={() => setShowSettings(false)} />
