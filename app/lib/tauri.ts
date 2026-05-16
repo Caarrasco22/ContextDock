@@ -1,5 +1,5 @@
 import { invoke } from "@tauri-apps/api/core";
-import { AppSettings, GitInfo } from "./types";
+import { AppSettings, GitInfo, PromptHistoryEntry } from "./types";
 
 export async function getSettings(): Promise<AppSettings> {
   return invoke("get_settings");
@@ -32,4 +32,12 @@ export async function readLaunchPrompt(projectPath: string): Promise<string> {
 
 export async function launchOpenCode(projectPath: string): Promise<void> {
   return invoke("launch_opencode", { projectPath });
+}
+
+export async function listPromptHistory(projectPath: string): Promise<PromptHistoryEntry[]> {
+  return invoke("list_prompt_history", { projectPath });
+}
+
+export async function readPromptHistoryFile(projectPath: string, filename: string): Promise<string> {
+  return invoke("read_prompt_history_file", { projectPath, filename });
 }

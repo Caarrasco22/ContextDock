@@ -1,6 +1,6 @@
 mod commands;
 
-use commands::{get_settings, get_init_preview, init_context, save_settings, scan_projects, get_context_files, write_context_file, get_git_info, is_git_repo, generate_opencode_launch_prompt, read_launch_prompt, launch_opencode};
+use commands::{get_settings, get_init_preview, init_context, save_settings, scan_projects, get_context_files, write_context_file, get_git_info, is_git_repo, generate_opencode_launch_prompt, read_launch_prompt, launch_opencode, list_prompt_history, read_prompt_history_file};
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
@@ -27,7 +27,9 @@ pub fn run() {
             is_git_repo,
             generate_opencode_launch_prompt,
             read_launch_prompt,
-            launch_opencode
+            launch_opencode,
+            list_prompt_history,
+            read_prompt_history_file
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

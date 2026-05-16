@@ -24,4 +24,4 @@ pub use projects::{
 
 pub use git::{get_git_info, is_git_repo};
 
-pub use opencode::{generate_opencode_launch_prompt, read_launch_prompt, launch_opencode};
+pub use opencode::{generate_opencode_launch_prompt, read_launch_prompt, launch_opencode, list_prompt_history, read_prompt_history_file};

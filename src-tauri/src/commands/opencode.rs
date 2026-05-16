@@ -236,6 +236,107 @@ pub fn read_launch_prompt(project_path: String) -> Result<String, String> {
     fs::read_to_string(&path).map_err(|e| e.to_string())
 }
 
+#[derive(Debug, Serialize, Deserialize)]
+pub struct PromptHistoryEntry {
+    pub filename: String,
+    pub path: String,
+    pub size_bytes: u64,
+    pub modified: String,
+}
+
+#[command]
+pub fn list_prompt_history(project_path: String) -> Result<Vec<PromptHistoryEntry>, String> {
+    let path = Path::new(&project_path);
+    if !path.exists() {
+        return Err(format!("Project path does not exist: {}", project_path));
+    }
+
+    let history_dir = path.join(".context-bridge").join("history");
+    if !history_dir.exists() {
+        return Ok(Vec::new());
+    }
+
+    let mut entries: Vec<PromptHistoryEntry> = Vec::new();
+
+    let dir_entries = fs::read_dir(&history_dir).map_err(|e| e.to_string())?;
+    for entry in dir_entries {
+        let entry = entry.map_err(|e| e.to_string())?;
+        let file_path = entry.path();
+
+        if !file_path.is_file() {
+            continue;
+        }
+
+        let file_name = match file_path.file_name().and_then(|n| n.to_str()) {
+            Some(n) => n.to_string(),
+            None => continue,
+        };
+
+        if !file_name.ends_with(".md") {
+            continue;
+        }
+
+        let metadata = match file_path.metadata() {
+            Ok(m) => m,
+            Err(_) => continue,
+        };
+
+        let size_bytes = metadata.len();
+        let modified = match metadata.modified() {
+            Ok(t) => {
+                let duration = t.duration_since(std::time::UNIX_EPOCH).unwrap_or_default();
+                let secs = duration.as_secs();
+                let naive = chrono::DateTime::from_timestamp(secs as i64, 0)
+                    .unwrap_or_default();
+                naive.format("%Y-%m-%d %H:%M:%S").to_string()
+            }
+            Err(_) => String::from("unknown"),
+        };
+
+        entries.push(PromptHistoryEntry {
+            filename: file_name,
+            path: file_path.to_string_lossy().to_string(),
+            size_bytes,
+            modified,
+        });
+    }
+
+    entries.sort_by(|a, b| b.filename.cmp(&a.filename));
+
+    Ok(entries)
+}
+
+#[command]
+pub fn read_prompt_history_file(project_path: String, filename: String) -> Result<String, String> {
+    if filename.is_empty() || filename.contains('/') || filename.contains('\\') || filename.contains("..") {
+        return Err("Invalid filename.".to_string());
+    }
+
+    if !filename.ends_with(".md") {
+        return Err("Only .md files can be read.".to_string());
+    }
+
+    let path = Path::new(&project_path);
+    if !path.exists() {
+        return Err(format!("Project path does not exist: {}", project_path));
+    }
+
+    let file_path = path.join(".context-bridge").join("history").join(&filename);
+
+    if !file_path.exists() {
+        return Err(format!("History file not found: {}", filename));
+    }
+
+    let canonical = file_path.canonicalize().map_err(|_| "Cannot resolve file path.".to_string())?;
+    let canonical_base = path.join(".context-bridge").join("history").canonicalize().map_err(|_| "Cannot resolve history directory.".to_string())?;
+
+    if !canonical.starts_with(&canonical_base) {
+        return Err("Access denied: file is outside the history directory.".to_string());
+    }
+
+    fs::read_to_string(&file_path).map_err(|e| e.to_string())
+}
+
 #[cfg(target_os = "macos")]
 fn shell_escape_single_quotes(s: &str) -> String {
     s.replace('\'', "'\\''")
@@ -552,5 +653,155 @@ mod tests {
 
         assert_eq!(count, 2, "Expected 2 history snapshots, found {}", count);
         assert!(launch2.content.contains("Second task."));
+    }
+
+    // --- prompt history listing / reading tests ---
+
+    fn write_history_file(dir: &std::path::Path, filename: &str, content: &str) {
+        let history = dir.join(".context-bridge").join("history");
+        std::fs::create_dir_all(&history).unwrap();
+        std::fs::write(history.join(filename), content).unwrap();
+    }
+
+    #[test]
+    fn test_list_prompt_history_returns_snapshots() {
+        let dir = setup_test_context_dir("list-history");
+        write_history_file(&dir, "2025-01-01_120000-launch-prompt.md", "old");
+        write_history_file(&dir, "2025-06-01_120000-launch-prompt.md", "newer");
+        write_history_file(&dir, "2025-03-15_093000-launch-prompt.md", "middle");
+
+        let result = list_prompt_history(dir.to_string_lossy().to_string());
+        let _ = std::fs::remove_dir_all(&dir);
+
+        assert!(result.is_ok(), "Expected Ok, got {:?}", result.err());
+        let entries = result.unwrap();
+        assert_eq!(entries.len(), 3, "Expected 3 entries, got {}", entries.len());
+        assert!(entries[0].filename > entries[1].filename, "Should be sorted newest first");
+        assert!(entries[1].filename > entries[2].filename, "Should be sorted newest first");
+    }
+
+    #[test]
+    fn test_list_prompt_history_empty_when_no_history_dir() {
+        let dir = setup_test_context_dir("no-history");
+        let result = list_prompt_history(dir.to_string_lossy().to_string());
+        let _ = std::fs::remove_dir_all(&dir);
+
+        assert!(result.is_ok());
+        assert!(result.unwrap().is_empty());
+    }
+
+    #[test]
+    fn test_list_prompt_history_ignores_non_md_files() {
+        let dir = setup_test_context_dir("non-md-filter");
+        write_history_file(&dir, "2025-01-01_120000-launch-prompt.md", "ok");
+        std::fs::write(
+            dir.join(".context-bridge").join("history").join("notes.txt"),
+            "not-md",
+        )
+        .unwrap();
+
+        let result = list_prompt_history(dir.to_string_lossy().to_string());
+        let _ = std::fs::remove_dir_all(&dir);
+
+        assert!(result.is_ok());
+        assert_eq!(result.unwrap().len(), 1, "Should only list .md files");
+    }
+
+    #[test]
+    fn test_read_prompt_history_file_returns_content() {
+        let dir = setup_test_context_dir("read-history");
+        write_history_file(&dir, "2025-06-15_080000-launch-prompt.md", "Hello history!");
+
+        let result = read_prompt_history_file(
+            dir.to_string_lossy().to_string(),
+            "2025-06-15_080000-launch-prompt.md".to_string(),
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+
+        assert!(result.is_ok());
+        assert_eq!(result.unwrap(), "Hello history!");
+    }
+
+    #[test]
+    fn test_read_prompt_history_rejects_slash() {
+        let dir = setup_test_context_dir("reject-slash");
+        let result = read_prompt_history_file(
+            dir.to_string_lossy().to_string(),
+            "../secret.md".to_string(),
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("Invalid"));
+    }
+
+    #[test]
+    fn test_read_prompt_history_rejects_backslash() {
+        let dir = setup_test_context_dir("reject-backslash");
+        let result = read_prompt_history_file(
+            dir.to_string_lossy().to_string(),
+            "..\\secret.md".to_string(),
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("Invalid"));
+    }
+
+    #[test]
+    fn test_read_prompt_history_rejects_dot_dot() {
+        let dir = setup_test_context_dir("reject-dotdot");
+        let result = read_prompt_history_file(
+            dir.to_string_lossy().to_string(),
+            "../launch-prompt.md".to_string(),
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("Invalid"));
+    }
+
+    #[test]
+    fn test_read_prompt_history_rejects_non_md() {
+        let dir = setup_test_context_dir("reject-non-md");
+        write_history_file(&dir, "notes.txt", "not markdown");
+
+        let result = read_prompt_history_file(
+            dir.to_string_lossy().to_string(),
+            "notes.txt".to_string(),
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_read_prompt_history_rejects_nonexistent_file() {
+        let dir = setup_test_context_dir("reject-missing");
+        let result = read_prompt_history_file(
+            dir.to_string_lossy().to_string(),
+            "nonexistent.md".to_string(),
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_read_prompt_history_rejects_symlink_escape() {
+        // Verify canonicalize check catches path traversal even if basic string checks pass.
+        let dir = setup_test_context_dir("symlink-test");
+        let history = dir.join(".context-bridge").join("history");
+        std::fs::create_dir_all(&history).unwrap();
+
+        // Write a file outside the history dir
+        let outside = dir.join("secret.txt");
+        std::fs::write(&outside, "leaked").unwrap();
+
+        // Create a symlink inside history to the outside file
+        let symlink_path = history.join("innocent.md");
+        std::os::unix::fs::symlink(&outside, &symlink_path).unwrap();
+
+        let result = read_prompt_history_file(
+            dir.to_string_lossy().to_string(),
+            "innocent.md".to_string(),
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+        assert!(result.is_err(), "Should reject access via symlink to outside file");
     }
 }

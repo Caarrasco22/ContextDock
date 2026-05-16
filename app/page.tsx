@@ -7,8 +7,14 @@ import { useProjectStore } from "./stores/projectStore";
 import { ProjectCard } from "./components/project-card";
 import { InitPreviewModal } from "./components/init-preview-modal";
 import { SettingsDrawer } from "./components/settings-drawer";
-import { ProjectSummary, ProjectMeta, GitInfo } from "./lib/types";
-import { getGitInfo, generateOpenCodeLaunchPrompt, launchOpenCode } from "./lib/tauri";
+import { ProjectSummary, ProjectMeta, GitInfo, PromptHistoryEntry } from "./lib/types";
+import { getGitInfo, generateOpenCodeLaunchPrompt, launchOpenCode, listPromptHistory, readPromptHistoryFile } from "./lib/tauri";
+
+function formatFileSize(bytes: number): string {
+  if (bytes < 1024) return `${bytes} B`;
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
+  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+}
 
 function TauriUnavailableBanner() {
   return (
@@ -205,6 +211,14 @@ function ProjectDetailPanel({
   isGeneratingPrompt,
   requestedTask,
   onRequestedTaskChange,
+  promptHistory,
+  isLoadingPromptHistory,
+  selectedHistoryContent,
+  selectedHistoryFilename,
+  onViewHistoryFile,
+  onCopyHistoryFile,
+  onCloseHistoryPreview,
+  historyStatus,
 }: {
   project: ProjectSummary;
   contextFiles: { meta: ProjectMeta | null; current: string | null; architecture: string | null; recent_work: string | null } | null;
@@ -225,6 +239,14 @@ function ProjectDetailPanel({
   isGeneratingPrompt: boolean;
   requestedTask: string;
   onRequestedTaskChange: (value: string) => void;
+  promptHistory: PromptHistoryEntry[];
+  isLoadingPromptHistory: boolean;
+  selectedHistoryContent: string | null;
+  selectedHistoryFilename: string | null;
+  onViewHistoryFile: (entry: PromptHistoryEntry) => void;
+  onCopyHistoryFile: (entry: PromptHistoryEntry) => void;
+  onCloseHistoryPreview: () => void;
+  historyStatus: string | null;
 }) {
   const typeColors: Record<string, string> = {
     nextjs: "bg-blue-900/30 text-blue-400 border-blue-800/50",
@@ -363,6 +385,77 @@ function ProjectDetailPanel({
               {launchPromptContent && (
                 <div className="mt-2 text-xs text-zinc-500">
                   Prompt saved at: <code className="text-zinc-400">.context-bridge/launch-prompt.md</code>
+                </div>
+              )}
+
+              {isLoadingPromptHistory ? (
+                <div className="border-t border-zinc-800/60 pt-3 mt-3">
+                  <div className="flex items-center gap-2 text-xs text-zinc-500">
+                    <svg className="animate-spin w-3 h-3" viewBox="0 0 24 24" fill="none">
+                      <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
+                      <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
+                    </svg>
+                    Loading prompt history...
+                  </div>
+                </div>
+              ) : promptHistory.length > 0 && (
+                <div className="border-t border-zinc-800/60 pt-3 mt-3">
+                  <h4 className="text-xs font-medium text-zinc-400 mb-2">Prompt History</h4>
+                  <div className="space-y-2 max-h-48 overflow-y-auto">
+                    {promptHistory.map((entry) => (
+                      <div
+                        key={entry.filename}
+                        className="flex items-center justify-between px-3 py-2 rounded-lg bg-zinc-800/40 border border-zinc-700/40"
+                      >
+                        <div className="min-w-0 flex-1">
+                          <div className="text-xs text-zinc-300 font-mono truncate">{entry.filename}</div>
+                          <div className="flex items-center gap-2 mt-0.5">
+                            <span className="text-xs text-zinc-500">{formatFileSize(entry.size_bytes)}</span>
+                            <span className="text-xs text-zinc-600">{entry.modified}</span>
+                          </div>
+                        </div>
+                        <div className="flex items-center gap-1.5 ml-3 shrink-0">
+                          <button
+                            onClick={() => onViewHistoryFile(entry)}
+                            className="px-2 py-1 text-xs text-zinc-400 hover:text-zinc-200 border border-zinc-700/60 rounded hover:bg-zinc-700/40 transition-colors"
+                          >
+                            View
+                          </button>
+                          <button
+                            onClick={() => onCopyHistoryFile(entry)}
+                            className="px-2 py-1 text-xs text-zinc-400 hover:text-zinc-200 border border-zinc-700/60 rounded hover:bg-zinc-700/40 transition-colors"
+                          >
+                            Copy
+                          </button>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
+
+              {historyStatus && (
+                <div className={`text-xs px-3 py-2 rounded-lg ${historyStatus.startsWith("Error") ? "bg-red-900/30 text-red-400" : "bg-emerald-900/30 text-emerald-400"}`}>
+                  {historyStatus}
+                </div>
+              )}
+
+              {selectedHistoryContent !== null && (
+                <div className="border-t border-zinc-800/60 pt-3 mt-3">
+                  <div className="flex items-center justify-between mb-2">
+                    <h4 className="text-xs font-medium text-zinc-400 truncate max-w-[80%]">
+                      Preview: {selectedHistoryFilename}
+                    </h4>
+                    <button
+                      onClick={onCloseHistoryPreview}
+                      className="px-2 py-1 text-xs text-zinc-400 hover:text-zinc-200 border border-zinc-700/60 rounded hover:bg-zinc-700/40 transition-colors"
+                    >
+                      Close
+                    </button>
+                  </div>
+                  <pre className="w-full max-h-64 overflow-auto bg-zinc-950/80 border border-zinc-700/60 rounded-lg p-3 text-xs text-zinc-300 font-mono whitespace-pre-wrap break-all">
+                    {selectedHistoryContent}
+                  </pre>
                 </div>
               )}
             </div>
@@ -565,6 +658,12 @@ export default function Home() {
   const defaultRequestedTask = "Continue from the Current Goal above. Implement the requested task described there using the project context, architecture notes, and recent work.";
   const [requestedTask, setRequestedTask] = useState(defaultRequestedTask);
 
+  const [promptHistory, setPromptHistory] = useState<PromptHistoryEntry[]>([]);
+  const [isLoadingPromptHistory, setIsLoadingPromptHistory] = useState(false);
+  const [selectedHistoryContent, setSelectedHistoryContent] = useState<string | null>(null);
+  const [selectedHistoryFilename, setSelectedHistoryFilename] = useState<string | null>(null);
+  const [historyStatus, setHistoryStatus] = useState<string | null>(null);
+
   const [showSettings, setShowSettings] = useState(false);
 
   useEffect(() => {
@@ -608,6 +707,12 @@ export default function Home() {
         setGitError("Failed to load Git info");
         setIsLoadingGit(false);
       });
+
+    setIsLoadingPromptHistory(true);
+    listPromptHistory(project.path)
+      .then((entries) => setPromptHistory(entries))
+      .catch(() => setPromptHistory([]))
+      .finally(() => setIsLoadingPromptHistory(false));
   }, [selectProject, loadContextFiles]);
 
   const handleInitializeClick = useCallback(async (project: ProjectSummary) => {
@@ -719,6 +824,10 @@ export default function Home() {
     setLaunchPromptContent(null);
     setPromptStatus(null);
     setRequestedTask(defaultRequestedTask);
+    setPromptHistory([]);
+    setSelectedHistoryContent(null);
+    setSelectedHistoryFilename(null);
+    setHistoryStatus(null);
     selectProject(null);
   }, [selectProject, defaultRequestedTask]);
 
@@ -732,6 +841,10 @@ export default function Home() {
       const result = await generateOpenCodeLaunchPrompt(selectedProject.path, task);
       setLaunchPromptContent(result.content);
       setPromptStatus("Launch prompt generated successfully!");
+
+      listPromptHistory(selectedProject.path)
+        .then((entries) => setPromptHistory(entries))
+        .catch(() => {});
     } catch (err) {
       setPromptStatus(`Error: ${String(err)}`);
     } finally {
@@ -765,6 +878,34 @@ export default function Home() {
       setIsLaunchingOpenCode(false);
     }
   }, [selectedProject, isLaunchingOpenCode]);
+
+  const handleViewHistoryFile = useCallback(async (entry: PromptHistoryEntry) => {
+    if (!selectedProject) return;
+    try {
+      const content = await readPromptHistoryFile(selectedProject.path, entry.filename);
+      setSelectedHistoryContent(content);
+      setSelectedHistoryFilename(entry.filename);
+    } catch (err) {
+      setHistoryStatus(`Error: ${String(err)}`);
+    }
+  }, [selectedProject]);
+
+  const handleCopyHistoryFile = useCallback(async (entry: PromptHistoryEntry) => {
+    if (!selectedProject) return;
+    try {
+      const content = await readPromptHistoryFile(selectedProject.path, entry.filename);
+      await navigator.clipboard.writeText(content);
+      setHistoryStatus("History prompt copied");
+      setTimeout(() => setHistoryStatus(null), 2000);
+    } catch (err) {
+      setHistoryStatus(`Error: ${String(err)}`);
+    }
+  }, [selectedProject]);
+
+  const handleCloseHistoryPreview = useCallback(() => {
+    setSelectedHistoryContent(null);
+    setSelectedHistoryFilename(null);
+  }, []);
 
   if (!settings || isConfiguring) {
     return (
@@ -879,6 +1020,14 @@ export default function Home() {
           isGeneratingPrompt={isGeneratingPrompt}
           requestedTask={requestedTask}
           onRequestedTaskChange={setRequestedTask}
+          promptHistory={promptHistory}
+          isLoadingPromptHistory={isLoadingPromptHistory}
+          selectedHistoryContent={selectedHistoryContent}
+          selectedHistoryFilename={selectedHistoryFilename}
+          onViewHistoryFile={handleViewHistoryFile}
+          onCopyHistoryFile={handleCopyHistoryFile}
+          onCloseHistoryPreview={handleCloseHistoryPreview}
+          historyStatus={historyStatus}
         />
       )}
       <SettingsDrawer isOpen={showSettings} onClose={() => setShowSettings(false)} />

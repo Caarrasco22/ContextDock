@@ -78,3 +78,10 @@ export interface GitInfo {
   last_commit_date: string | null;
   recent_commits: CommitInfo[];
 }
+
+export interface PromptHistoryEntry {
+  filename: string;
+  path: string;
+  size_bytes: number;
+  modified: string;
+}
