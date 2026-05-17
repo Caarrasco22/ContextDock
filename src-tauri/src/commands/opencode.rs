@@ -395,39 +395,84 @@ fn launch_in_terminal(cmd_str: &str, cwd: &Path, prompt_path: Option<&Path>) -> 
     Ok(())
 }
 
-#[cfg(target_os = "linux")]
-fn launch_in_terminal(cmd_str: &str, cwd: &Path, prompt_path: Option<&Path>) -> Result<(), String> {
-    let pp_escaped = prompt_path.map(|p| p.to_string_lossy().replace('\'', "'\\''"));
-    let full_cmd = build_shell_command(cmd_str, pp_escaped.as_deref());
+#[cfg(any(target_os = "linux", test))]
+fn escape_single_quoted_bash(s: &str) -> String {
+    format!("'{}'", s.replace('\'', "'\\''"))
+}
 
-    let terminals: &[(&str, &[&str])] = &[
-        ("gnome-terminal", &["--", "bash", "-c"]),
-        ("konsole", &["-e"]),
-        ("xfce4-terminal", &["-e"]),
-        ("xterm", &["-e"]),
+#[cfg(any(target_os = "linux", test))]
+fn generate_linux_launch_script(opencode_cmd: &str, project_path: &Path, has_prompt: bool) -> String {
+    let cd_path = escape_single_quoted_bash(&project_path.to_string_lossy());
+    let prompt_path = escape_single_quoted_bash(".context-bridge/launch-prompt.md");
+
+    let opencode_line = if has_prompt {
+        format!("{} --prompt \"$(cat {})\"", opencode_cmd.trim(), prompt_path)
+    } else {
+        opencode_cmd.trim().to_string()
+    };
+
+    format!(
+        "#!/usr/bin/env bash\ncd {}\n\nif [ -f {prompt} ]; then\n  {with_prompt}\nelse\n  {without_prompt}\nfi\n\necho\nread -r -p \"OpenCode session ended. Press Enter to close...\"\n",
+        cd_path,
+        prompt = prompt_path,
+        with_prompt = opencode_line,
+        without_prompt = opencode_cmd.trim(),
+    )
+}
+
+#[cfg(any(target_os = "linux", test))]
+fn terminal_launch_args(term: &str, script_path: &Path) -> Option<(&'static str, Vec<String>)> {
+    let sp = script_path.to_string_lossy().to_string();
+    match term {
+        "gnome-terminal" => Some(("gnome-terminal", vec!["--".into(), "bash".into(), sp])),
+        "konsole" => Some(("konsole", vec!["-e".into(), "bash".into(), sp])),
+        "xfce4-terminal" => Some(("xfce4-terminal", vec!["--command".into(), format!("bash '{}'", sp)])),
+        "mate-terminal" => Some(("mate-terminal", vec!["--".into(), "bash".into(), sp])),
+        "alacritty" => Some(("alacritty", vec!["-e".into(), "bash".into(), sp])),
+        "kitty" => Some(("kitty", vec!["bash".into(), sp])),
+        "xterm" => Some(("xterm", vec!["-e".into(), "bash".into(), sp])),
+        _ => None,
+    }
+}
+
+#[cfg(target_os = "linux")]
+fn launch_in_terminal(cmd_str: &str, cwd: &Path, _prompt_path: Option<&Path>) -> Result<(), String> {
+    let has_prompt = cwd.join(".context-bridge").join("launch-prompt.md").exists();
+    let script_path = cwd.join(".context-bridge").join("launch-opencode.sh");
+
+    let script_content = generate_linux_launch_script(cmd_str, cwd, has_prompt);
+    fs::write(&script_path, &script_content)
+        .map_err(|e| format!("Failed to write launch script: {}", e))?;
+
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let mut perms = fs::metadata(&script_path)
+            .map_err(|e| format!("Failed to read script permissions: {}", e))?
+            .permissions();
+        perms.set_mode(0o755);
+        fs::set_permissions(&script_path, perms)
+            .map_err(|e| format!("Failed to set script executable: {}", e))?;
+    }
+
+    let terminal_names = [
+        "gnome-terminal", "konsole", "xfce4-terminal", "mate-terminal",
+        "alacritty", "kitty", "xterm",
     ];
 
-    let shell_cmd = format!("cd \"{}\" && {}; exec $SHELL", cwd.to_string_lossy(), full_cmd);
-
-    for (term, prefix_args) in terminals {
-        let mut cmd = Command::new(term);
-        cmd.args(*prefix_args);
-        cmd.arg(&shell_cmd);
-
-        match cmd.spawn() {
-            Ok(_) => return Ok(()),
-            Err(_) => continue,
+    for name in terminal_names {
+        if let Some((bin, args)) = terminal_launch_args(name, &script_path) {
+            let mut cmd = Command::new(bin);
+            cmd.args(&args);
+            match cmd.spawn() {
+                Ok(_) => return Ok(()),
+                Err(_) => continue,
+            }
         }
     }
 
-    let mut parts: Vec<&str> = full_cmd.split_whitespace().collect();
-    if parts.is_empty() {
-        return Err("OpenCode command is empty.".to_string());
-    }
-    let exe = parts.remove(0);
-    Command::new(exe)
-        .args(&parts)
-        .current_dir(cwd)
+    Command::new("bash")
+        .arg(script_path.to_string_lossy().as_ref())
         .spawn()
         .map_err(|e| format!("Failed to launch OpenCode: {}", e))?;
 
@@ -803,5 +848,133 @@ mod tests {
         );
         let _ = std::fs::remove_dir_all(&dir);
         assert!(result.is_err(), "Should reject access via symlink to outside file");
+    }
+
+    // --- Linux launcher helper tests ---
+
+    #[test]
+    fn test_escape_single_quoted_bash_plain() {
+        let result = escape_single_quoted_bash("/home/user/projects");
+        assert_eq!(result, "'/home/user/projects'");
+    }
+
+    #[test]
+    fn test_escape_single_quoted_bash_with_spaces() {
+        let result = escape_single_quoted_bash("/home/user/my projects");
+        assert_eq!(result, "'/home/user/my projects'");
+    }
+
+    #[test]
+    fn test_escape_single_quoted_bash_with_single_quote() {
+        let result = escape_single_quoted_bash("/home/user/it's a project");
+        assert_eq!(result, "'/home/user/it'\\''s a project'");
+    }
+
+    #[test]
+    fn test_escape_single_quoted_bash_empty() {
+        let result = escape_single_quoted_bash("");
+        assert_eq!(result, "''");
+    }
+
+    #[test]
+    fn test_generate_linux_script_with_prompt() {
+        let script = generate_linux_launch_script("opencode", Path::new("/tmp/proj"), true);
+        assert!(script.contains("#!/usr/bin/env bash"), "Script should have shebang");
+        assert!(script.contains("cd '/tmp/proj'"), "Script should cd to project dir, got: {}", script);
+        assert!(script.contains("--prompt"), "Script should use --prompt flag, got: {}", script);
+        assert!(script.contains("$(cat"), "Script should use cat for prompt, got: {}", script);
+        assert!(script.contains("read -r -p"), "Script should have read prompt to keep terminal open");
+    }
+
+    #[test]
+    fn test_generate_linux_script_without_prompt() {
+        let script = generate_linux_launch_script("opencode", Path::new("/tmp/proj"), false);
+        assert!(script.contains("#!/usr/bin/env bash"));
+        assert!(!script.contains("--prompt"), "Script should NOT use --prompt when no prompt exists, got: {}", script);
+        assert!(!script.contains("$(cat"), "Script should NOT use cat when no prompt exists");
+        assert!(script.contains("read -r -p"), "Script should have read prompt to keep terminal open");
+    }
+
+    #[test]
+    fn test_generate_linux_script_no_positional_prompt_path() {
+        let script = generate_linux_launch_script("opencode", Path::new("/tmp/proj"), true);
+        let lines: Vec<&str> = script.lines().collect();
+
+        let mut in_then = false;
+        for line in &lines {
+            if line.trim() == "then" {
+                in_then = true;
+                continue;
+            }
+            if line.trim() == "else" || line.trim() == "fi" {
+                in_then = false;
+                continue;
+            }
+            if in_then && line.contains("opencode") && !line.starts_with('#') {
+                assert!(
+                    line.contains("--prompt"),
+                    "OpenCode invocation in then-branch should use --prompt flag. Got: {}",
+                    line
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn test_generate_linux_script_with_custom_command() {
+        let script = generate_linux_launch_script("/usr/local/bin/opencode", Path::new("/tmp/proj"), false);
+        assert!(script.contains("/usr/local/bin/opencode"));
+    }
+
+    #[test]
+    fn test_terminal_launch_args_gnome_terminal() {
+        let script = Path::new("/tmp/test/script.sh");
+        let (bin, args) = terminal_launch_args("gnome-terminal", script).unwrap();
+        assert_eq!(bin, "gnome-terminal");
+        assert_eq!(args[0], "--");
+        assert_eq!(args[1], "bash");
+        assert!(args[2].contains("script.sh"));
+    }
+
+    #[test]
+    fn test_terminal_launch_args_konsole() {
+        let script = Path::new("/tmp/test/script.sh");
+        let (bin, args) = terminal_launch_args("konsole", script).unwrap();
+        assert_eq!(bin, "konsole");
+        assert_eq!(args[0], "-e");
+        assert_eq!(args[1], "bash");
+    }
+
+    #[test]
+    fn test_terminal_launch_args_xterm() {
+        let script = Path::new("/tmp/test/script.sh");
+        let (bin, args) = terminal_launch_args("xterm", script).unwrap();
+        assert_eq!(bin, "xterm");
+        assert_eq!(args[0], "-e");
+        assert_eq!(args[1], "bash");
+    }
+
+    #[test]
+    fn test_terminal_launch_args_unknown() {
+        let script = Path::new("/tmp/test/script.sh");
+        assert!(terminal_launch_args("not-a-terminal", script).is_none());
+    }
+
+    #[test]
+    fn test_terminal_launch_args_kitty() {
+        let script = Path::new("/tmp/test/script.sh");
+        let (bin, args) = terminal_launch_args("kitty", script).unwrap();
+        assert_eq!(bin, "kitty");
+        assert_eq!(args[0], "bash");
+    }
+
+    #[test]
+    fn test_terminal_launch_args_xfce4_terminal() {
+        let script = Path::new("/tmp/test/script.sh");
+        let (bin, args) = terminal_launch_args("xfce4-terminal", script).unwrap();
+        assert_eq!(bin, "xfce4-terminal");
+        assert_eq!(args[0], "--command");
+        assert!(args[1].contains("bash '"));
+        assert!(args[1].contains("script.sh'"));
     }
 }
