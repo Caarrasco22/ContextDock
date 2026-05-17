@@ -342,27 +342,77 @@ fn shell_escape_single_quotes(s: &str) -> String {
     s.replace('\'', "'\\''")
 }
 
-#[cfg(target_os = "windows")]
-fn launch_in_terminal(cmd_str: &str, cwd: &Path, prompt_path: Option<&Path>) -> Result<(), String> {
-    let mut args: Vec<String> = vec!["/C".to_string(), "start".to_string(), "OpenCode".to_string()];
+#[cfg(any(target_os = "windows", test))]
+fn escape_powershell_single_quoted(s: &str) -> String {
+    format!("'{}'", s.replace('\'', "''"))
+}
 
-    let full_cmd = if let Some(p) = prompt_path {
-        let pp_escaped = p.to_string_lossy().replace('\'', "''");
-        format!(
-            "powershell -NoProfile -Command \"cd '{}'; {} --prompt (Get-Content '{}' -Raw); pause\"",
-            cwd.to_string_lossy().replace('\'', "''"),
-            cmd_str,
-            pp_escaped
-        )
+#[cfg(any(target_os = "windows", test))]
+fn generate_windows_launch_script(opencode_cmd: &str, project_path: &Path, has_prompt: bool) -> String {
+    let project_path_escaped = escape_powershell_single_quoted(&project_path.to_string_lossy());
+    let prompt_rel = ".context-bridge\\launch-prompt.md";
+    let prompt_escaped = escape_powershell_single_quoted(prompt_rel);
+    let cmd = opencode_cmd.trim();
+
+    let mut script = String::new();
+    script.push_str(&format!("Set-Location -LiteralPath {}\n\n", project_path_escaped));
+
+    if has_prompt {
+        script.push_str(&format!(
+            "if (Test-Path -LiteralPath {pl}) {{\n    $prompt = Get-Content -LiteralPath {pl} -Raw\n    {cmd} --prompt $prompt\n}} else {{\n    {cmd}\n}}\n\n",
+            pl = prompt_escaped,
+            cmd = cmd,
+        ));
     } else {
-        format!("cd /D \"{}\" && {}", cwd.to_string_lossy(), cmd_str)
-    };
+        script.push_str(&format!("{}\n\n", cmd));
+    }
 
-    args.push(full_cmd);
+    script.push_str("Write-Host \"\"\n");
+    script.push_str("Write-Host \"OpenCode session ended. Press Enter to close...\"\n");
+    script.push_str("Read-Host\n");
 
-    Command::new("cmd")
-        .args(&args)
-        .current_dir(cwd)
+    script
+}
+
+#[cfg(target_os = "windows")]
+fn launch_in_terminal(cmd_str: &str, cwd: &Path, _prompt_path: Option<&Path>) -> Result<(), String> {
+    let has_prompt = cwd.join(".context-bridge").join("launch-prompt.md").exists();
+    let script_path = cwd.join(".context-bridge").join("launch-opencode.ps1");
+
+    let script_content = generate_windows_launch_script(cmd_str, cwd, has_prompt);
+    fs::write(&script_path, &script_content)
+        .map_err(|e| format!("Failed to write launch script: {}", e))?;
+
+    let script_abs = script_path
+        .canonicalize()
+        .unwrap_or_else(|_| script_path.clone());
+
+    let script_str = script_abs.to_string_lossy().to_string();
+
+    let wt_result = Command::new("wt.exe")
+        .args([
+            "powershell.exe",
+            "-NoProfile",
+            "-ExecutionPolicy",
+            "Bypass",
+            "-File",
+            &script_str,
+        ])
+        .spawn();
+
+    match wt_result {
+        Ok(_) => return Ok(()),
+        Err(_) => {}
+    }
+
+    Command::new("powershell.exe")
+        .args([
+            "-NoProfile",
+            "-ExecutionPolicy",
+            "Bypass",
+            "-File",
+            &script_str,
+        ])
         .spawn()
         .map_err(|e| format!("Failed to launch OpenCode: {}", e))?;
 
@@ -976,5 +1026,92 @@ mod tests {
         assert_eq!(args[0], "--command");
         assert!(args[1].contains("bash '"));
         assert!(args[1].contains("script.sh'"));
+    }
+
+    // --- Windows launcher helper tests ---
+
+    #[test]
+    fn test_escape_powershell_single_quoted_plain() {
+        let result = escape_powershell_single_quoted(r"C:\Users\test");
+        assert_eq!(result, "'C:\\Users\\test'");
+    }
+
+    #[test]
+    fn test_escape_powershell_single_quoted_with_spaces() {
+        let result = escape_powershell_single_quoted(r"C:\Users\Pablo Carrasco\Test Project");
+        assert_eq!(result, "'C:\\Users\\Pablo Carrasco\\Test Project'");
+    }
+
+    #[test]
+    fn test_escape_powershell_single_quoted_with_single_quote() {
+        let result = escape_powershell_single_quoted(r"C:\it's here");
+        assert_eq!(result, "'C:\\it''s here'");
+    }
+
+    #[test]
+    fn test_escape_powershell_single_quoted_empty() {
+        let result = escape_powershell_single_quoted("");
+        assert_eq!(result, "''");
+    }
+
+    #[test]
+    fn test_generate_windows_script_with_prompt() {
+        let script = generate_windows_launch_script("opencode", Path::new(r"C:\Users\test"), true);
+        assert!(script.contains("Set-Location -LiteralPath"), "Script should contain Set-Location");
+        assert!(script.contains(r".context-bridge\launch-prompt.md"), "Script should reference launch-prompt.md");
+        assert!(script.contains("Get-Content -LiteralPath"), "Script should use Get-Content");
+        assert!(script.contains("-Raw"), "Script should use -Raw flag");
+        assert!(script.contains("$prompt"), "Script should use $prompt variable");
+        assert!(script.contains("--prompt $prompt"), "Script should pass --prompt with $prompt, got: {}", script);
+        assert!(script.contains("Read-Host"), "Script should have Read-Host to keep terminal open");
+    }
+
+    #[test]
+    fn test_generate_windows_script_without_prompt() {
+        let script = generate_windows_launch_script("opencode", Path::new(r"C:\Users\test"), false);
+        assert!(script.contains("Set-Location -LiteralPath"));
+        assert!(!script.contains("--prompt"), "Script should NOT use --prompt when no prompt exists, got: {}", script);
+        assert!(!script.contains("$prompt"), "Script should not reference $prompt when no prompt");
+        assert!(script.contains("Read-Host"), "Script should have Read-Host");
+    }
+
+    #[test]
+    fn test_generate_windows_script_no_positional_prompt_path() {
+        let script = generate_windows_launch_script("opencode", Path::new(r"C:\Users\test"), true);
+        let lines: Vec<&str> = script.lines().collect();
+        for line in &lines {
+            if line.contains("opencode") {
+                assert!(
+                    !line.contains(r"launch-prompt.md"),
+                    "OpenCode invocation should not receive launch-prompt.md as positional arg. Got: {}",
+                    line
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn test_generate_windows_script_with_opencode_cmd() {
+        let script = generate_windows_launch_script("opencode.cmd", Path::new(r"C:\test"), true);
+        assert!(script.contains("opencode.cmd --prompt $prompt"), "Should support opencode.cmd");
+    }
+
+    #[test]
+    fn test_generate_windows_script_with_full_path() {
+        let script = generate_windows_launch_script(
+            r"C:\tools\opencode.exe",
+            Path::new(r"C:\test"),
+            false,
+        );
+        assert!(script.contains(r"C:\tools\opencode.exe"), "Should support full paths");
+    }
+
+    #[test]
+    fn test_generate_windows_script_path_inside_context_bridge() {
+        let script = generate_windows_launch_script("opencode", Path::new(r"C:\Users\test"), true);
+        assert!(
+            !script.contains("..\\") && !script.contains("../"),
+            "Script should not contain path traversal patterns"
+        );
     }
 }
